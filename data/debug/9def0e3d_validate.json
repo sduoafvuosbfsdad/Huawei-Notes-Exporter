@@ -1,0 +1,20 @@
+{
+  "preview": "data/unzipped/files/38cce95346d45da528c17763f23a1726.png",
+  "transform": {
+    "scale": 0.9019999999999999,
+    "dx": -0.5,
+    "dy": -0.5,
+    "point_match_score": 0.9081209247184351
+  },
+  "metrics": {
+    "intersection": 2961.0,
+    "render_pixels": 4003.0,
+    "dark_pixels": 8148.0,
+    "precision": 0.7396952285785661,
+    "recall": 0.3634020618556701,
+    "iou": 0.3221980413492927,
+    "alignment_error": 0.26030477142143393
+  },
+  "dark_threshold": 80,
+  "width_scale": 0.5
+}
