@@ -1,112 +1,100 @@
-# Huawei Notes Ink Reverse Engineering (PENCILENGINE)
+# Huawei Notes Exporter
 
-This repository reverse engineers Huawei Notes `.bin` ink payloads found inside `.hinote` exports.
+A focused command-line tool for converting Huawei Notes `.hinote` exports into
+PDFs with the original document pages and clean, native vector handwriting.
 
-## What Is Included
+It decodes Huawei's `PENCILENGINE` binary records directly—coordinates,
+pressure, pen width, colour, and point states. It does **not** trace the
+low-resolution preview images, so handwriting remains sharp when zoomed or
+printed.
 
-- Metadata manifest builder:
-  - `tools/build_manifest.py`
-- Binary forensics/probing:
-  - `tools/bin_probe.py`
-  - `research/dump_bin_forensics.py`
-- Parser library:
-  - `src/pencilengine/parser.py`
-- Required CLIs:
-  - `extract_strokes.py`
-  - `render_strokes.py`
-  - `validate.py`
-- Format write-up:
-  - `FORMAT.md`
-- Tests:
-  - `tests/`
+## Install
 
-## Data Layout
-
-- Unzipped source:
-  - `data/unzipped/`
-- Page/bin mapping:
-  - `data/manifest.json`
-- Debug artifacts:
-  - `data/debug/`
-
-## Reproducible Workflow
-
-1. Build manifest from unzipped `.hinote`:
+Python 3.10 or newer is required.
 
 ```bash
-python3 tools/build_manifest.py --unzipped-dir data/unzipped --out data/manifest.json
+python -m pip install .
 ```
 
-2. Probe raw binary structure:
+For development:
 
 ```bash
-python3 tools/bin_probe.py data/unzipped/files/53d1088bd634cba318c4d27cc9371070.bin --json-out data/debug/53d1088b_probe.json
-python3 tools/bin_probe.py data/unzipped/files/9def0e3d381fa1c2e41f7f80d88503a3.bin --json-out data/debug/9def0e3d_probe.json
+python -m pip install -e '.[dev]'
 ```
 
-3. Generate deeper forensic dumps:
+## Use
 
 ```bash
-python3 research/dump_bin_forensics.py data/unzipped/files/53d1088bd634cba318c4d27cc9371070.bin --out data/debug/53d1088b_forensics.json
-python3 research/dump_bin_forensics.py data/unzipped/files/9def0e3d381fa1c2e41f7f80d88503a3.bin --out data/debug/9def0e3d_forensics.json
+hinote-export MyNotes.hinote
 ```
 
-4. Extract strokes to open JSON:
+The default output is `MyNotes.pdf` next to the input archive. Choose another
+path with `--output`:
 
 ```bash
-python3 extract_strokes.py data/unzipped/files/53d1088bd634cba318c4d27cc9371070.bin --out data/debug/53d1088b_strokes.json
+hinote-export MyNotes.hinote --output exported/chemistry.pdf
 ```
 
-5. Render strokes (transparent background):
+Replace an existing output and print machine-readable statistics:
 
 ```bash
-python3 render_strokes.py data/debug/53d1088b_strokes.json --out data/debug/53d1088b_render.png --svg-out data/debug/53d1088b_render.svg
+hinote-export MyNotes.hinote --output chemistry.pdf --force --json
 ```
 
-6. Validate against Huawei preview PNG (auto alignment scale+translate):
+The package can also be run without the installed command wrapper:
 
 ```bash
-python3 validate.py \
-  data/debug/53d1088b_strokes.json \
-  --preview data/unzipped/files/71e46e4aad83a6f0f8e10169ea3fc4d1.png \
-  --out data/debug/53d1088b_overlay.png \
-  --ink-out data/debug/53d1088b_ink_aligned.png \
-  --report-out data/debug/53d1088b_validate.json
+python -m huawei_notes_exporter MyNotes.hinote
 ```
 
-## CLI Reference
+Run `hinote-export --help` for archive safety-limit options.
 
-### `extract_strokes.py`
+## Python API
 
-```bash
-python3 extract_strokes.py <path_to_bin> --out out.json
+```python
+from huawei_notes_exporter import convert_hinote
+
+result = convert_hinote("MyNotes.hinote", "MyNotes.pdf")
+print(result.pages, result.strokes, result.points)
 ```
 
-Outputs parsed strokes with offsets, raw fields, and decoded point records.
+Use `extract_hinote()` when you need the decoded note model without writing a
+PDF, or `decode_pencilengine()` to parse a single Huawei stroke binary.
 
-### `render_strokes.py`
+## What is preserved
 
-```bash
-python3 render_strokes.py out.json --out out.png
-```
+- The original embedded PDF pages and dimensions
+- Native black and coloured pen strokes
+- Pressure-sensitive line width
+- Curves, dots, ticks, circles, and handwriting placement
+- PDF metadata derived from the Huawei note title
 
-Optional:
+Huawei sometimes adds blank note pages beyond the imported document. The
+export uses the embedded PDF's page count, so that padding is omitted.
 
-- `--width`, `--height`
-- `--scale`, `--dx`, `--dy`
-- `--width-scale`
-- `--svg-out out.svg`
+## Format support
 
-### `validate.py`
+The decoder supports the format observed in Huawei Notes `hinote_1.0.4`
+archives:
 
-```bash
-python3 validate.py out.json --preview preview.png --out overlay.png
-```
+- gzip-compressed `.jhinote` JSON metadata
+- big-endian `PENCILENGINE` containers
+- `0x00010000` and `0x00010001` stroke-record layouts
+- 36-byte point records with start/move/end states
+- embedded PDF page backgrounds
 
-Performs automatic scale+translate registration and reports alignment metrics.
+Huawei has not published this binary format. Unknown record layouts are
+rejected instead of being guessed or raster-traced. If a newer export is not
+supported, please open an issue with the Huawei Notes app version and the exact
+error message. Do not attach private notes to public issues.
 
-## Running Tests
+## Security
 
-```bash
-python3 -m unittest discover -s tests -v
-```
+Archives are read in place and never extracted to user-controlled paths.
+Absolute paths, parent-directory traversal, excessive entry counts, and
+oversized uncompressed archives are rejected. CLI output is written to a
+temporary sibling file and atomically renamed only after successful conversion.
+
+## License
+
+MIT
