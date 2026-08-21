@@ -1,5 +1,7 @@
 # Huawei Notes Exporter
 
+| Message from the human: This is completely written by gpt 5.6 sol, it worked for me so I guess ill put it up. Highlight issues and ill get it fixed when I see it 
+
 A focused command-line tool for converting Huawei Notes `.hinote` exports into
 PDFs with the original document pages and clean, native vector handwriting.
 
