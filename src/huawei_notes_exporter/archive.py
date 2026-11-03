@@ -34,12 +34,15 @@ def extract_hinote(
             max_entries=max_entries,
             max_uncompressed_bytes=max_uncompressed_bytes,
         )
-        title, default_ratio, pdf_member = _discover_note(archive)
-        pages = _discover_pages(archive, default_ratio)
+        title, default_ratio, pdf_member, pdf_attachment_id = _discover_note(archive)
+        pages, explicit_backgrounds = _discover_pages(
+            archive, default_ratio, pdf_attachment_id
+        )
         return ExtractedNote(
             title=title,
             embedded_pdf=archive.read(pdf_member),
             pages=pages,
+            explicit_backgrounds=explicit_backgrounds,
         )
 
 
@@ -84,7 +87,9 @@ def _attachment_member(file_path: object) -> str:
     return f"files/{PurePosixPath(str(file_path or '')).name}"
 
 
-def _discover_note(archive: zipfile.ZipFile) -> tuple[str, float, str]:
+def _discover_note(
+    archive: zipfile.ZipFile,
+) -> tuple[str, float, str, str | None]:
     names = set(archive.namelist())
     fallback_pdf = _find_embedded_pdf(archive)
 
@@ -108,12 +113,18 @@ def _discover_note(archive: zipfile.ZipFile) -> tuple[str, float, str]:
                 is_pdf = False
             candidate = _attachment_member(attachment.get("filePath"))
             if is_pdf and candidate in names:
-                return title, page_ratio, candidate
+                attachment_id = attachment.get("id")
+                return (
+                    title,
+                    page_ratio,
+                    candidate,
+                    str(attachment_id) if attachment_id else None,
+                )
         if fallback_pdf:
-            return title, page_ratio, fallback_pdf
+            return title, page_ratio, fallback_pdf, None
 
     if fallback_pdf:
-        return "Converted HiNote", 0.706, fallback_pdf
+        return "Converted HiNote", 0.706, fallback_pdf, None
     raise HiNoteError("No imported PDF was found in the HiNote archive.")
 
 
@@ -128,10 +139,13 @@ def _find_embedded_pdf(archive: zipfile.ZipFile) -> str | None:
 
 
 def _discover_pages(
-    archive: zipfile.ZipFile, default_ratio: float
-) -> dict[int, NotePage]:
+    archive: zipfile.ZipFile,
+    default_ratio: float,
+    pdf_attachment_id: str | None,
+) -> tuple[dict[int, NotePage], bool]:
     names = set(archive.namelist())
     pages: dict[int, NotePage] = {}
+    explicit_backgrounds = False
     for member in archive.namelist():
         if not member.startswith("pages/") or not member.endswith(".jhinote"):
             continue
@@ -160,8 +174,24 @@ def _discover_pages(
             if stroke_member
             else None
         )
-        pages[page_number] = NotePage(page_number, ratio, pencil)
-    return pages
+        background_id = payload.get("bkgAttachmentId")
+        pdf_page_index = None
+        if background_id:
+            explicit_backgrounds = True
+            if pdf_attachment_id is None or str(background_id) == pdf_attachment_id:
+                pdf_page_index = _background_index(payload, member)
+        pages[page_number] = NotePage(page_number, ratio, pencil, pdf_page_index)
+    return pages, explicit_backgrounds
+
+
+def _background_index(payload: dict, member: str) -> int:
+    try:
+        index = int(payload.get("bkgAttachmentIndex") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HiNoteError(f"Invalid background page index in {member}.") from exc
+    if index < 0:
+        raise HiNoteError(f"Invalid background page index in {member}.")
+    return index
 
 
 def _positive_ratio(value: object, member: str, default: float) -> float:

@@ -31,3 +31,22 @@ def test_conversion_preserves_pdf_and_adds_vector_ink(
     assert b"Synthetic HiNote page" in content
     assert b" RG" in content
     assert b" c" in content
+
+
+def test_blank_and_pdf_backed_pages_are_emitted_in_note_order(
+    mixed_background_hinote: bytes,
+) -> None:
+    output = io.BytesIO()
+    result = convert_hinote(io.BytesIO(mixed_background_hinote), output)
+
+    assert result.pages == 2
+    assert result.vector_pages == 2
+    assert result.strokes == 3
+
+    output.seek(0)
+    reader = PdfReader(output)
+    blank, backed = reader.pages
+    assert b"Synthetic HiNote page" not in blank.get_contents().get_data()
+    assert float(blank.mediabox.width) == 600
+    assert round(float(blank.mediabox.height)) == round(600 / 0.70695555)
+    assert b"Synthetic HiNote page" in backed.get_contents().get_data()

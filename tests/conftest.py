@@ -151,3 +151,110 @@ def legacy_pencil_data() -> bytes:
         1.0,
     )
     return bytes(data)
+
+
+def _v12_stroke(points: list[tuple[float, float, int]], width: float) -> bytes:
+    """One version-1.2 stroke record (same byte layout as 1.1)."""
+    header_size = 0x30
+    body = bytearray(0xB8 - header_size + len(points) * 36)
+    record = bytearray(header_size) + body
+    struct.pack_into(">IIII", record, 0, header_size, 0, 0x00010002, len(body))
+    struct.pack_into(">III", record, 0x20, 0x44, 0x30, 0x74)
+    struct.pack_into(">f", record, 0x90, width)
+    struct.pack_into(">II", record, 0xA8, len(points), 36)
+    for index, (x, y, state) in enumerate(points):
+        struct.pack_into(
+            ">ffIffffIf",
+            record,
+            0xB8 + index * 36,
+            x,
+            y,
+            index * 8,
+            1.0,
+            0.0,
+            0.0,
+            0.2,
+            state,
+            float(index),
+        )
+    return bytes(record)
+
+
+def _v12_footer(payload: bytes) -> bytes:
+    footer = bytearray(0x28)
+    struct.pack_into(">IIII", footer, 0, 0x28, 3, 0x00010000, len(payload))
+    return bytes(footer) + payload
+
+
+def build_v12_pencil(
+    strokes: list[bytes], footer_payload: bytes = b"", canvas_width: int = 1000
+) -> bytes:
+    header = bytearray(0x88)
+    header[:12] = b"PENCILENGINE"
+    struct.pack_into(">I", header, 0x10, 0x00010001)
+    struct.pack_into(">I", header, 0x70, len(strokes))
+    struct.pack_into(">II", header, 0x80, canvas_width, canvas_width)
+    return bytes(header) + b"".join(strokes) + _v12_footer(footer_payload)
+
+
+@pytest.fixture
+def v12_pencil_data() -> bytes:
+    """Mirrors Huawei Notes 12.4.3 output: freehand + shape-recognized strokes.
+
+    The shape stroke's points are all tagged state 4, and the footer carries a
+    payload (referencing the shape) so it is longer than the bare 40 bytes.
+    """
+    freehand = _v12_stroke(
+        [(100.0, 100.0, 4), (150.0, 120.0, 6), (200.0, 90.0, 5)], 3.0
+    )
+    circle = _v12_stroke(
+        [(500.0 + 50.0 * (i % 2), 500.0 + 50.0 * (i // 2), 4) for i in range(5)], 5.0
+    )
+    return build_v12_pencil([freehand, circle], footer_payload=bytes(56))
+
+
+@pytest.fixture
+def mixed_background_hinote() -> bytes:
+    """A note whose page 1 is blank and page 2 is backed by imported PDF page 1."""
+    note = {
+        "customNoteContent": {
+            "noteTitle": "Mixed Note",
+            "pageRatio": 0.70695555,
+            "attachment": [
+                {
+                    "attachType": 3,
+                    "id": "pdf-attachment",
+                    "filePath": "/data/data/com.huawei.hinote/files/source_pdf",
+                }
+            ],
+        }
+    }
+    stroke = _v12_stroke([(100.0, 100.0, 4), (900.0, 1300.0, 5)], 3.0)
+
+    def page(number: int, stroke_name: str, background: str | None) -> dict:
+        content = {
+            "pageNumber": number,
+            "pageRatio": 0.70695555,
+            "attachment": [
+                {
+                    "attachType": 0,
+                    "filePath": f"/data/data/com.huawei.hinote/files/{stroke_name}",
+                }
+            ],
+        }
+        if background:
+            content["bkgAttachmentId"] = background
+            content["bkgAttachmentIndex"] = 0
+        return {"customNotePageContent": content}
+
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("note.jhinote", _gzip_payload(note))
+        archive.writestr("pages/a.jhinote", _gzip_payload(page(1, "blank.bin", None)))
+        archive.writestr(
+            "pages/b.jhinote", _gzip_payload(page(2, "pdf.bin", "pdf-attachment"))
+        )
+        archive.writestr("files/source_pdf", _synthetic_pdf())
+        archive.writestr("files/blank.bin", build_v12_pencil([stroke]))
+        archive.writestr("files/pdf.bin", build_v12_pencil([stroke, stroke]))
+    return stream.getvalue()
