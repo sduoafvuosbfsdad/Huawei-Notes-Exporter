@@ -15,14 +15,8 @@ from .archive import (
     extract_hinote,
 )
 from .errors import HiNoteError
-from .models import (
-    ExportResult,
-    ExtractedNote,
-    NotePage,
-    PencilPage,
-    Point,
-    Stroke,
-)
+from .models import ExportResult, ExtractedNote, NotePage
+from .render import draw_elements, draw_ink, draw_paper
 
 Destination: TypeAlias = str | Path | BinaryIO
 
@@ -73,12 +67,7 @@ def export_pdf(note: ExtractedNote, destination: Destination) -> ExportResult:
         output_page = writer.pages[-1]
         page_width = float(output_page.mediabox.width)
         page_height = float(output_page.mediabox.height)
-        overlay = _make_overlay(
-            pencil,
-            note_page.ratio if note_page else 1.0,
-            page_width,
-            page_height,
-        )
+        overlay = _make_overlay(note_page, source_page is None, page_width, page_height)
         if overlay is not None:
             output_page.merge_page(overlay)
 
@@ -130,93 +119,35 @@ def _page_plan(
 
 
 def _make_overlay(
-    pencil: PencilPage | None,
-    page_ratio: float,
+    note_page: NotePage | None,
+    blank: bool,
     page_width: float,
     page_height: float,
 ):
-    if pencil is None or not pencil.strokes:
+    """Render paper (blank pages only), text boxes, pictures, and ink."""
+    pencil = note_page.pencil if note_page else None
+    has_ink = pencil is not None and bool(pencil.strokes)
+    if note_page is None or not (blank or note_page.elements or has_ink):
         return None
     stream = io.BytesIO()
     output = canvas.Canvas(
         stream, pagesize=(page_width, page_height), pageCompression=1
     )
-    _draw_pencil_page(output, pencil, page_ratio, page_width, page_height)
+    if blank:
+        draw_paper(
+            output,
+            note_page.background,
+            note_page.page_color,
+            page_width,
+            page_height,
+        )
+    draw_elements(output, note_page.elements, page_width, page_height)
+    if has_ink:
+        draw_ink(output, pencil, note_page.ratio, page_width, page_height)
     output.showPage()
     output.save()
     stream.seek(0)
     return PdfReader(stream).pages[0]
-
-
-def _draw_pencil_page(
-    output: canvas.Canvas,
-    pencil: PencilPage,
-    page_ratio: float,
-    page_width: float,
-    page_height: float,
-) -> None:
-    logical_height = pencil.canvas_width / page_ratio
-    scale_x = page_width / pencil.canvas_width
-    scale_y = page_height / logical_height
-    width_scale = (scale_x + scale_y) * 0.5
-    output.setLineCap(1)
-    output.setLineJoin(1)
-
-    def px(value: float) -> float:
-        return value * scale_x
-
-    def py(value: float) -> float:
-        return page_height - value * scale_y
-
-    for stroke in pencil.strokes:
-        if not stroke.points:
-            continue
-        red, green, blue = stroke.color
-        output.setStrokeColorRGB(red / 255, green / 255, blue / 255)
-        output.setFillColorRGB(red / 255, green / 255, blue / 255)
-        if len(stroke.points) == 1:
-            radius = _point_width(stroke, stroke.points[0]) * width_scale * 0.5
-            output.circle(
-                px(stroke.points[0].x), py(stroke.points[0].y), radius, stroke=0, fill=1
-            )
-            continue
-
-        for index, (start, end) in enumerate(
-            zip(stroke.points[:-1], stroke.points[1:], strict=True)
-        ):
-            c1x, c1y, c2x, c2y = _control_points(stroke.points, index)
-            output.setLineWidth(_segment_width(stroke, start, end) * width_scale)
-            path = output.beginPath()
-            path.moveTo(px(start.x), py(start.y))
-            path.curveTo(px(c1x), py(c1y), px(c2x), py(c2y), px(end.x), py(end.y))
-            output.drawPath(path, stroke=1, fill=0)
-
-
-def _point_width(stroke: Stroke, point: Point) -> float:
-    return max(
-        0.35,
-        stroke.nominal_width
-        * (point.min_factor + (1.0 - point.min_factor) * point.pressure),
-    )
-
-
-def _segment_width(stroke: Stroke, start: Point, end: Point) -> float:
-    return (_point_width(stroke, start) + _point_width(stroke, end)) * 0.5
-
-
-def _control_points(
-    points: tuple[Point, ...], index: int
-) -> tuple[float, float, float, float]:
-    p0 = points[max(index - 1, 0)]
-    p1 = points[index]
-    p2 = points[index + 1]
-    p3 = points[min(index + 2, len(points) - 1)]
-    return (
-        p1.x + (p2.x - p0.x) / 6,
-        p1.y + (p2.y - p0.y) / 6,
-        p2.x - (p3.x - p1.x) / 6,
-        p2.y - (p3.y - p1.y) / 6,
-    )
 
 
 def _clean_title(value: str) -> str:
