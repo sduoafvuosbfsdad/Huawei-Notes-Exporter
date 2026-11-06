@@ -153,7 +153,12 @@ def legacy_pencil_data() -> bytes:
     return bytes(data)
 
 
-def _v12_stroke(points: list[tuple[float, float, int]], width: float) -> bytes:
+def _v12_stroke(
+    points: list[tuple[float, float, int]],
+    width: float,
+    pen_type: int = 0,
+    alpha: float = 0.0,
+) -> bytes:
     """One version-1.2 stroke record (same byte layout as 1.1)."""
     header_size = 0x30
     body = bytearray(0xB8 - header_size + len(points) * 36)
@@ -161,6 +166,8 @@ def _v12_stroke(points: list[tuple[float, float, int]], width: float) -> bytes:
     struct.pack_into(">IIII", record, 0, header_size, 0, 0x00010002, len(body))
     struct.pack_into(">III", record, 0x20, 0x44, 0x30, 0x74)
     struct.pack_into(">f", record, 0x90, width)
+    struct.pack_into(">I", record, 0x74, pen_type)
+    struct.pack_into(">f", record, 0x88, alpha)
     struct.pack_into(">II", record, 0xA8, len(points), 36)
     for index, (x, y, state) in enumerate(points):
         struct.pack_into(
@@ -257,4 +264,111 @@ def mixed_background_hinote() -> bytes:
         archive.writestr("files/source_pdf", _synthetic_pdf())
         archive.writestr("files/blank.bin", build_v12_pencil([stroke]))
         archive.writestr("files/pdf.bin", build_v12_pencil([stroke, stroke]))
+    return stream.getvalue()
+
+
+_PNG_1X1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de"
+    "0000000c4944415408d763f8cfc0f01f0005000201e5270ede0000000049454e44ae426082"
+)
+
+
+@pytest.fixture
+def elements_hinote() -> bytes:
+    """A blank grid page with a text box, a picture and highlighter ink,
+    followed by a PDF-backed page (mirrors hinote_1.0.5 exports)."""
+    note = {
+        "customNoteContent": {
+            "noteTitle": "Elements Note",
+            "pageRatio": 0.70695555,
+            "attachment": [
+                {
+                    "attachType": 3,
+                    "id": "pdf-attachment",
+                    "filePath": "/data/data/com.huawei.hinote/files/source_pdf",
+                }
+            ],
+        }
+    }
+    blank_page = {
+        "customNotePageContent": {
+            "pageNumber": 1,
+            "pageRatio": 0.70695555,
+            "background": "base3",
+            "pageColor": -1,
+            "attachment": [
+                {
+                    "attachType": 0,
+                    "filePath": "/data/data/com.huawei.hinote/files/ink.bin",
+                }
+            ],
+            "pageElement": [
+                {
+                    "elementType": 1,
+                    "filePath": "/data/data/com.huawei.hinote/files/image/pic.png",
+                    "positionX": 0.5,
+                    "positionY": 0.6,
+                    "positionZ": -5,
+                    "width": 0.4,
+                    "height": 0.3,
+                    "angle": 0.0,
+                    "scale": 1.0,
+                },
+                {
+                    "elementType": 0,
+                    "contentText": "fallback",
+                    "html": (
+                        '<note><element type="TEXT"><hw_font size ="8.0">'
+                        '<font color ="#ffff0000">Hello</font></hw_font></element>'
+                        '<element type="TEXT">World</element></note>'
+                    ),
+                    "positionX": 0.1,
+                    "positionY": 0.05,
+                    "positionZ": -9,
+                    "width": 0.8,
+                    "height": 0.3,
+                    "angle": 0.0,
+                    "scale": 1.0,
+                },
+                {
+                    "elementType": 0,
+                    "contentText": "deleted",
+                    "isDelete": 1,
+                    "positionX": 0.1,
+                    "positionY": 0.5,
+                    "width": 0.5,
+                    "height": 0.1,
+                },
+            ],
+        }
+    }
+    backed_page = {
+        "customNotePageContent": {
+            "pageNumber": 2,
+            "pageRatio": 0.70695555,
+            "background": "base3",
+            "bkgAttachmentId": "pdf-attachment",
+            "bkgAttachmentIndex": 0,
+        }
+    }
+    highlighter = _v12_stroke(
+        [(100.0, 100.0, 4), (300.0, 120.0, 6), (500.0, 90.0, 5)],
+        25.0,
+        pen_type=5,
+        alpha=0.8,
+    )
+    airbrush = _v12_stroke(
+        [(100.0, 600.0, 4), (300.0, 650.0, 6), (500.0, 600.0, 5)],
+        40.0,
+        pen_type=4,
+        alpha=0.149,
+    )
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("note.jhinote", _gzip_payload(note))
+        archive.writestr("pages/a.jhinote", _gzip_payload(blank_page))
+        archive.writestr("pages/b.jhinote", _gzip_payload(backed_page))
+        archive.writestr("files/source_pdf", _synthetic_pdf())
+        archive.writestr("files/ink.bin", build_v12_pencil([highlighter, airbrush]))
+        archive.writestr("files/pic.png", _PNG_1X1)
     return stream.getvalue()

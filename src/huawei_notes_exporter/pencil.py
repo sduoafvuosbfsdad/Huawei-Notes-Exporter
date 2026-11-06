@@ -55,6 +55,10 @@ def decode_pencilengine(data: bytes, source_name: str = "stroke.bin") -> PencilP
             for offset in (0x7C, 0x80, 0x84)
         )
         nominal_width = struct.unpack_from(">f", data, position + 0x90)[0]
+        pen_type = struct.unpack_from(">I", data, position + 0x74)[0]
+        alpha = struct.unpack_from(">f", data, position + 0x88)[0]
+        # Records that leave the opacity unset (older exports) are opaque.
+        alpha = min(alpha, 1.0) if math.isfinite(alpha) and alpha > 0 else 1.0
         point_count = struct.unpack_from(">I", data, position + 0xA8)[0]
         point_stride = struct.unpack_from(">I", data, position + 0xAC)[0]
         if point_stride != _POINT_SIZE or point_count > 2_000_000:
@@ -98,7 +102,15 @@ def decode_pencilengine(data: bytes, source_name: str = "stroke.bin") -> PencilP
             raise HiNoteError(
                 f"Invalid pen width in stroke {stroke_index} of {source_name}."
             )
-        strokes.append(Stroke(color=color, nominal_width=nominal_width, points=points))
+        strokes.append(
+            Stroke(
+                color=color,
+                nominal_width=nominal_width,
+                points=points,
+                pen_type=pen_type,
+                alpha=alpha,
+            )
+        )
         position = record_end
 
     if len(stroke_versions) > 1:

@@ -25,6 +25,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "numpy>=1.26",
+  "pillow>=10",
+  "pypdfium2>=4.30",
   "pytest>=8,<10",
   "ruff>=0.12,<1",
 ]
