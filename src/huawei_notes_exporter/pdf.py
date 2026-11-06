@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import BinaryIO, TypeAlias
 
-from pypdf import PdfReader, PdfWriter
+from pypdf import PageObject, PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 
 from .archive import (
@@ -15,7 +15,14 @@ from .archive import (
     extract_hinote,
 )
 from .errors import HiNoteError
-from .models import ExportResult, ExtractedNote, PencilPage, Point, Stroke
+from .models import (
+    ExportResult,
+    ExtractedNote,
+    NotePage,
+    PencilPage,
+    Point,
+    Stroke,
+)
 
 Destination: TypeAlias = str | Path | BinaryIO
 
@@ -49,25 +56,31 @@ def export_pdf(note: ExtractedNote, destination: Destination) -> ExportResult:
     vector_pages = 0
     stroke_total = 0
     point_total = 0
-    for page_number, source_page in enumerate(reader.pages, 1):
-        note_page = note.pages.get(page_number)
+    reference_width = float(reader.pages[0].mediabox.width)
+    for note_page, source_page in _page_plan(note, reader):
         pencil = note_page.pencil if note_page else None
         if pencil and pencil.strokes:
             vector_pages += 1
             stroke_total += len(pencil.strokes)
             point_total += sum(len(stroke.points) for stroke in pencil.strokes)
 
-        page_width = float(source_page.mediabox.width)
-        page_height = float(source_page.mediabox.height)
+        if source_page is not None:
+            writer.add_page(source_page)
+        else:
+            # A note page without a PDF background (a page the user added in
+            # the app). Match the PDF width and the page's own aspect ratio.
+            writer.add_blank_page(reference_width, reference_width / note_page.ratio)
+        output_page = writer.pages[-1]
+        page_width = float(output_page.mediabox.width)
+        page_height = float(output_page.mediabox.height)
         overlay = _make_overlay(
             pencil,
             note_page.ratio if note_page else 1.0,
             page_width,
             page_height,
         )
-        writer.add_page(source_page)
         if overlay is not None:
-            writer.pages[-1].merge_page(overlay)
+            output_page.merge_page(overlay)
 
     title = _clean_title(note.title)
     writer.add_metadata(
@@ -84,11 +97,36 @@ def export_pdf(note: ExtractedNote, destination: Destination) -> ExportResult:
 
     return ExportResult(
         title=title,
-        pages=len(reader.pages),
+        pages=len(writer.pages),
         vector_pages=vector_pages,
         strokes=stroke_total,
         points=point_total,
     )
+
+
+def _page_plan(
+    note: ExtractedNote, reader: PdfReader
+) -> list[tuple[NotePage | None, PageObject | None]]:
+    """Pair each output page with its note metadata and PDF background.
+
+    When page metadata names its background, note pages are emitted in note
+    order: PDF-backed pages use the referenced PDF page and the rest are blank.
+    Otherwise note page N is overlaid on PDF page N (legacy exports).
+    """
+    if not note.explicit_backgrounds:
+        return [
+            (note.pages.get(number), source_page)
+            for number, source_page in enumerate(reader.pages, 1)
+        ]
+
+    plan: list[tuple[NotePage | None, PageObject | None]] = []
+    for number in sorted(note.pages):
+        note_page = note.pages[number]
+        index = note_page.pdf_page_index
+        if index is not None and index >= len(reader.pages):
+            raise HiNoteError(f"Page {number} references missing PDF page {index + 1}.")
+        plan.append((note_page, reader.pages[index] if index is not None else None))
+    return plan
 
 
 def _make_overlay(

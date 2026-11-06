@@ -10,6 +10,11 @@ _MAGIC = b"PENCILENGINE"
 _FILE_HEADER_SIZE = 0x88
 _POINT_SIZE = 36
 _SUPPORTED_VERSIONS = {0x00010000, 0x00010001}
+# Stroke records written by newer Huawei Notes builds (e.g. 12.4.3 on
+# HarmonyOS 4.3) are tagged 1.2 but share the 1.1 byte layout.
+_SUPPORTED_STROKE_VERSIONS = _SUPPORTED_VERSIONS | {0x00010002}
+_FOOTER_HEADER_SIZE = 0x28
+_FOOTER_RECORD_TYPE = 3
 
 
 def decode_pencilengine(data: bytes, source_name: str = "stroke.bin") -> PencilPage:
@@ -35,7 +40,11 @@ def decode_pencilengine(data: bytes, source_name: str = "stroke.bin") -> PencilP
             raise HiNoteError(f"Truncated stroke {stroke_index} in {source_name}.")
 
         header_size, reserved, version = struct.unpack_from(">III", data, position)
-        if header_size != 0x30 or reserved != 0 or version not in _SUPPORTED_VERSIONS:
+        if (
+            header_size != 0x30
+            or reserved != 0
+            or version not in _SUPPORTED_STROKE_VERSIONS
+        ):
             raise HiNoteError(
                 f"Unsupported stroke record {stroke_index} in {source_name}."
             )
@@ -95,10 +104,34 @@ def decode_pencilengine(data: bytes, source_name: str = "stroke.bin") -> PencilP
     if len(stroke_versions) > 1:
         raise HiNoteError(f"Mixed stroke versions in {source_name}.")
     record_version = next(iter(stroke_versions), file_version)
-    expected_footer = 40 if record_version == 0x00010000 else 72
-    if len(data) - position != expected_footer:
+    if not _is_valid_footer(data, position, record_version):
         raise HiNoteError(f"Unsupported PENCILENGINE footer in {source_name}.")
     return PencilPage(canvas_width=canvas_width, strokes=tuple(strokes))
+
+
+def _is_valid_footer(data: bytes, position: int, record_version: int) -> bool:
+    """Accept the trailing record that follows the last stroke.
+
+    The footer is a self-describing record: a 0x28-byte header
+    (size, type 3, version, payload size, UUID, 8 reserved bytes) followed by
+    ``payload size`` bytes. The payload is non-empty when the page holds
+    shape-recognized strokes, so its length varies. Older exports are also
+    matched by their historical fixed footer sizes.
+    """
+    remaining = len(data) - position
+    if remaining >= _FOOTER_HEADER_SIZE:
+        header_size, record_type, _, payload_size = struct.unpack_from(
+            ">IIII", data, position
+        )
+        if (
+            header_size == _FOOTER_HEADER_SIZE
+            and record_type == _FOOTER_RECORD_TYPE
+            and remaining == _FOOTER_HEADER_SIZE + payload_size
+        ):
+            return True
+    if record_version == 0x00010002:
+        return False
+    return remaining == (40 if record_version == 0x00010000 else 72)
 
 
 def _decode_point(
@@ -142,11 +175,16 @@ def _validate_point_states(
                 f"stroke {stroke_index} of {source_name}."
             )
         return
-    valid = (
+    # Freehand strokes go 4 (down), 6... (move), 5/6 (up). Shape-recognized
+    # strokes (circles, lines, ...) are generated outlines whose points are
+    # all tagged 4. Rendering ignores the state, so both are accepted.
+    freehand = (
         points[0].state == 4
         and points[-1].state in {5, 6}
         and all(point.state == 6 for point in points[1:-1])
     )
+    generated_shape = all(point.state == 4 for point in points)
+    valid = freehand or generated_shape
     if not valid:
         raise HiNoteError(
             "Unsupported point-state sequence in "
